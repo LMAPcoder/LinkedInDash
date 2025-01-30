@@ -17,7 +17,7 @@ st.set_page_config(
     }
 )
 
-@st.cache_data
+#@st.cache_data
 def fetch_table(location=None, keyword=None, date=None):
     # Start with an empty filter expression
     filter_expression = None
@@ -40,16 +40,42 @@ def fetch_table(location=None, keyword=None, date=None):
         else:
             filter_expression = Attr('time_stamp').gt(date)
 
-    # Perform scan, using the filter if any filters are specified
-    if filter_expression:
-        response = table.scan(
-            FilterExpression=filter_expression
-        )
-    else:
-        # No filters, retrieve entire table
-        response = table.scan()
+    # Initialize list to store all items
+    all_items = []
+    # Set the initial last evaluated key to None
+    last_evaluated_key = None
 
-    return response.get('Items', [])
+    while True:
+        # Perform scan with the filter expression and last evaluated key (if any)
+        if last_evaluated_key:
+            if filter_expression:
+                response = table.scan(
+                    FilterExpression=filter_expression,
+                    ExclusiveStartKey=last_evaluated_key
+                )
+            else:
+                response = table.scan(
+                    ExclusiveStartKey=last_evaluated_key
+                )
+        else:
+            if filter_expression:
+                response = table.scan(
+                    FilterExpression=filter_expression,
+                )
+            else:
+                response = table.scan()
+
+        # Add current page's items to the list
+        all_items.extend(response.get('Items', []))
+
+        # If LastEvaluatedKey is in the response, it means there are more items to fetch
+        last_evaluated_key = response.get('LastEvaluatedKey')
+
+        # If no LastEvaluatedKey, it means we've reached the end of the table
+        if not last_evaluated_key:
+            break
+
+    return all_items
 
 def extract_hours(time_string):
     # Match the number and unit (minute, hour, or day)
@@ -105,7 +131,7 @@ col1, col2, col3 = st.columns(3, gap="small")
 with col1:
     LOCATION = st.selectbox(
         label="Location",
-        options=[None, "Argentina", "United States", "Spain"],
+        options=[None, "Argentina", "United States", "Spain", "Latin America"],
         index=1,
     )
 
@@ -121,7 +147,21 @@ with col3:
         label="Retrieve time: last x days",
         min_value=1,
         max_value=30,
-        value=3
+        value=2
+    )
+
+col1, col2, col3, col4 = st.columns(4, gap="small")
+
+with col1:
+    REMOTE = st.toggle(
+        label="Remote"
+    )
+with col2:
+    N_APPLICANTS = st.slider(
+        label="Number of applicants",
+        min_value=25,
+        max_value=200,
+        value=200
     )
 
 now = datetime.now()
@@ -135,7 +175,7 @@ if st.button('Search', on_click=on_button_click):
 
 if st.session_state.run:
 
-    response = fetch_table(location=LOCATION, keyword=KEYWORD)
+    response = fetch_table(location=LOCATION, keyword=KEYWORD, date=date)
 
     if response == []:
         st.subheader("No records")
@@ -147,6 +187,7 @@ if st.session_state.run:
             "job_id",
             "job_link",
             "job_title",
+            "role_name",
             "job_function",
             "seniority_level",
             "company_name",
@@ -157,7 +198,6 @@ if st.session_state.run:
             "recruiter",
             "job_description",
             "description_language",
-            "role_name",
             "work_arrangement",
             "employment_type",
             "duration"
@@ -171,20 +211,37 @@ if st.session_state.run:
 
         df = pd.DataFrame(response, columns=column_order)
 
+        df.sort_values(by='time_stamp', inplace=True, ascending=False)
         df['time_stamp'] = df['time_stamp'].apply(convert_timestamp)
         df.insert(12, 'hours_posted', df['time_posted'].apply(extract_hours))
         df.insert(14, 'n_applicants', df['num_applicants'].apply(extract_integer))
 
-        st.dataframe(df)
+        df['job_id'] = df['job_id'].astype(str)
 
+        if REMOTE:
+            df = df[(df['location'] == LOCATION) | (df['work_arrangement'] == 'remote')]
 
-    st.header("map")
+        df = df[df['n_applicants'] <= N_APPLICANTS]
 
-    df['latitude'], df['longitude'] = zip(*df['location'].apply(geocode))
+        df.reset_index(inplace=True, drop=True)
 
-    df.dropna(subset=['latitude', 'longitude'])
+        st.dataframe(
+            data=df,
+            column_config={
+                'job_link': st.column_config.LinkColumn("job_link")
+            },
+            hide_index=False
+        )
 
-    st.map(df)
+    st.header("Statistics")
+
+    #st.header("map")
+
+    #df['latitude'], df['longitude'] = zip(*df['location'].apply(geocode))
+
+    #df.dropna(subset=['latitude', 'longitude'])
+
+    #st.map(df)
 
     st.session_state.run = False
 
